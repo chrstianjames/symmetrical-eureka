@@ -246,11 +246,13 @@ def build_rsa(sf_bytes: bytes) -> bytes:
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.serialization import Encoding, pkcs7
     key, cert = ensure_key()
+    # Attached (embedded .SF content, like jarsigner/apksigner). A detached
+    # signature has eContent ABSENT, which Android's JAR verifier rejects
+    # ("package appears invalid") - it requires the content inside the block.
     return (pkcs7.PKCS7SignatureBuilder()
             .set_data(sf_bytes)
             .add_signer(cert, key, hashes.SHA256())
-            .sign(Encoding.DER, [pkcs7.PKCS7Options.DetachedSignature,
-                                 pkcs7.PKCS7Options.Binary]))
+            .sign(Encoding.DER, [pkcs7.PKCS7Options.Binary]))
 
 
 def rebuild_apk(in_path: str, dex_patched: bytes, out_path: str):
@@ -458,6 +460,26 @@ def verify_apk(path: str) -> bool:
     if not bad_sf:
         print(f"  [ok] CERT.SF section digests valid ({len(sf_sections)} "
               f"entries)")
+    # CERT.RSA must EMBED the .SF bytes (attached, like jarsigner). A detached
+    # block has eContent ABSENT and Android refuses to install the package.
+    try:
+        from asn1crypto import cms
+        rsa = z.read("META-INF/CERT.RSA")
+        sf_raw = z.read("META-INF/CERT.SF")
+        ci = cms.ContentInfo.load(rsa)
+        emb = ci["content"]["encap_content_info"]["content"]
+        if emb is None:
+            print("  [FAIL] CERT.RSA is detached (no embedded .SF content)")
+            ok = False
+        elif emb.native != sf_raw:
+            print("  [FAIL] CERT.RSA embedded content != CERT.SF bytes")
+            ok = False
+        else:
+            print(f"  [ok] CERT.RSA embeds CERT.SF "
+                  f"({len(sf_raw)} B, attached like jarsigner)")
+    except Exception as e:
+        print(f"  [FAIL] CERT.RSA CMS parse error: {e}")
+        ok = False
     # Alignment check for STORED entries (uses the LOCAL header extra
     # length - central-directory extras are empty by design).
     raw = open(path, "rb").read()

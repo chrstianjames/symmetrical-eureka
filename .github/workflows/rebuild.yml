@@ -48,20 +48,23 @@ jobs:
               blob = z.read(n)
               print(f"extracted {n}: {len(blob)} bytes")
               open("/tmp/sigcheck/" + n.rsplit("/", 1)[-1], "wb").write(blob)
-          for sub in ("cms", "smime"):
-              r = subprocess.run(
-                  ["openssl", sub, "-verify", "-inform", "DER",
-                   "-in", "/tmp/sigcheck/CERT.RSA",
-                   "-content", "/tmp/sigcheck/CERT.SF",
-                   "-noverify", "-out", "/tmp/sigcheck/out.bin"],
-                  capture_output=True, text=True)
-              print(f"--- openssl {sub}: exit={r.returncode}")
-              print((r.stdout + r.stderr)[-1500:])
-              if r.returncode == 0:
-                  print("CMS SIGNATURE OK")
-                  break
-          else:
-              sys.exit("CMS verification failed")
+          # Verify WITHOUT supplying external content: Android's JAR verifier
+          # uses only the bytes embedded in the .RSA block (a detached block
+          # fails install with "package appears invalid").
+          r = subprocess.run(
+              ["openssl", "cms", "-verify", "-inform", "DER",
+               "-in", "/tmp/sigcheck/CERT.RSA",
+               "-noverify", "-out", "/tmp/sigcheck/out.bin"],
+              capture_output=True, text=True)
+          print(f"--- openssl cms (embedded content): exit={r.returncode}")
+          print((r.stdout + r.stderr)[-1500:])
+          if r.returncode != 0:
+              sys.exit("CMS verification failed: RSA block detached/corrupt")
+          sf = open("/tmp/sigcheck/CERT.SF", "rb").read()
+          out = open("/tmp/sigcheck/out.bin", "rb").read()
+          if sf != out:
+              sys.exit("CMS embedded content does not match CERT.SF")
+          print(f"CMS SIGNATURE OK (embedded {len(out)} bytes == CERT.SF)")
           EOF
 
       - name: Upload patched APK
