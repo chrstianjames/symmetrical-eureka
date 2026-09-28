@@ -1,0 +1,75 @@
+name: Rebuild NoLogin APK
+
+# Rebuilds PRIMEBIT-NoLogin.apk from the committed original APK on every
+# push / pull request, then runs the full verification suite.
+# The patcher + throwaway debug key are committed, so CI is reproducible:
+# same input bytes + same key = byte-identical output (except the CMS
+# signingTime stamp inside CERT.RSA).
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install cryptography asn1crypto
+
+      - name: Rebuild patched APK
+        run: |
+          python tools/patch_apk.py 5_6181698127930598959.apk \
+            -o PRIMEBIT-NoLogin.apk
+
+      - name: Verify patched APK
+        run: |
+          python tools/patch_apk.py PRIMEBIT-NoLogin.apk --verify
+          test "$(sha256sum < PRIMEBIT-NoLogin.apk | cut -d' ' -f1)" != ""
+
+      - name: Verify v1 (JAR) signature with OpenSSL
+        run: |
+          openssl version
+          python - <<'EOF'
+          import subprocess, zipfile, os, sys
+          os.makedirs("/tmp/sigcheck", exist_ok=True)
+          z = zipfile.ZipFile("PRIMEBIT-NoLogin.apk")
+          for n in ("META-INF/CERT.SF", "META-INF/CERT.RSA"):
+              blob = z.read(n)
+              print(f"extracted {n}: {len(blob)} bytes")
+              open("/tmp/sigcheck/" + n.rsplit("/", 1)[-1], "wb").write(blob)
+          # Verify WITHOUT supplying external content: Android's JAR verifier
+          # uses only the bytes embedded in the .RSA block (a detached block
+          # fails install with "package appears invalid").
+          r = subprocess.run(
+              ["openssl", "cms", "-verify", "-inform", "DER",
+               "-in", "/tmp/sigcheck/CERT.RSA",
+               "-noverify", "-out", "/tmp/sigcheck/out.bin"],
+              capture_output=True, text=True)
+          print(f"--- openssl cms (embedded content): exit={r.returncode}")
+          print((r.stdout + r.stderr)[-1500:])
+          if r.returncode != 0:
+              sys.exit("CMS verification failed: RSA block detached/corrupt")
+          sf = open("/tmp/sigcheck/CERT.SF", "rb").read()
+          out = open("/tmp/sigcheck/out.bin", "rb").read()
+          if sf != out:
+              sys.exit("CMS embedded content does not match CERT.SF")
+          print(f"CMS SIGNATURE OK (embedded {len(out)} bytes == CERT.SF)")
+          EOF
+
+      - name: Upload patched APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PRIMEBIT-NoLogin
+          path: PRIMEBIT-NoLogin.apk
+          if-no-files-found: error
