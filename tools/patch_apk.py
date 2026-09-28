@@ -289,16 +289,17 @@ def rebuild_apk(in_path: str, dex_patched: bytes, out_path: str):
                 comp_data = comp_obj.compress(data) + comp_obj.flush()
             crc = zlib.crc32(data) & 0xFFFFFFFF
             name_b = name.encode("utf-8")
-            # Local header is 30 bytes + name + extra; align STORED data to 4.
+            # Local header is 30 bytes + name + extra; align STORED data to 4
+            # with plain zero padding (matches aapt/zipalign output; the 0xd935
+            # TLV form got rejected at install with "package appears invalid").
             extra = b""
+            local_ver = 20
             if method == zipfile.ZIP_STORED:
+                local_ver = 10
                 pad = (-(offset + 30 + len(name_b))) % 4
-                if pad:
-                    # Proper alignment extra block (id 0xd935) so strict
-                    # parsers (PackageManager, cloner apps) accept the entry.
-                    extra = struct.pack("<HH", 0xd935, pad) + b"\x00" * pad
+                extra = b"\x00" * pad
             # Local header order is mod-TIME then mod-DATE; dt=(date,time).
-            header = struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, 0x0800,
+            header = struct.pack("<IHHHHHIIIHH", 0x04034B50, local_ver, 0x0800,
                                  method, dt[1], dt[0], crc,
                                  len(comp_data), len(data),
                                  len(name_b), len(extra))
@@ -332,12 +333,14 @@ def rebuild_apk(in_path: str, dex_patched: bytes, out_path: str):
              extra_len) in central:
             name_b = name.encode("utf-8")
             # Central dir order is also mod-TIME then mod-DATE.
-            f.write(struct.pack("<IHHHHHHIIIHHHHHII", 0x02014B50, 20, 20, 0,
-                                method, dt[1], dt[0], crc, csize, usize,
-                                len(name_b), extra_len, 0, 0, 0, 0, lh_off))
+            cd_ver = 10 if method == zipfile.ZIP_STORED else 20
+            # Central flags must match local flags (0x0800 UTF-8) and central
+            # extras stay empty (matches aapt/zipalign output).
+            f.write(struct.pack("<IHHHHHHIIIHHHHHII", 0x02014B50, 20, cd_ver,
+                                0x0800, method, dt[1], dt[0], crc, csize,
+                                usize, len(name_b), 0, 0, 0, 0, 0, lh_off))
             f.write(name_b)
-            f.write(b"\x00" * extra_len)
-            offset += 46 + len(name_b) + extra_len
+            offset += 46 + len(name_b)
         cd_size = offset - cd_start
         f.write(struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, len(central),
                             len(central), cd_size, cd_start, 0))
@@ -455,14 +458,20 @@ def verify_apk(path: str) -> bool:
     if not bad_sf:
         print(f"  [ok] CERT.SF section digests valid ({len(sf_sections)} "
               f"entries)")
-    # Alignment check for STORED entries.
+    # Alignment check for STORED entries (uses the LOCAL header extra
+    # length - central-directory extras are empty by design).
+    raw = open(path, "rb").read()
     for info in z.infolist():
         if info.compress_type == zipfile.ZIP_STORED and not info.is_dir():
-            data_off = info.header_offset + 30 + len(info.filename.encode(
-                "utf-8")) + len(info.extra)
+            lh = info.header_offset
+            assert raw[lh:lh + 4] == b"PK\x03\x04", info.filename
+            local_extra_len = struct.unpack_from("<H", raw, lh + 28)[0]
+            data_off = (lh + 30 + len(info.filename.encode("utf-8")) +
+                        local_extra_len)
             if data_off % 4:
-                print(f"  [warn] {info.filename} STORED data not "
+                print(f"  [FAIL] {info.filename} STORED data not "
                       f"4-aligned (off={data_off})")
+                ok = False
     print("  [ok] STORED-entry alignment checked")
     z.close()
     return ok
