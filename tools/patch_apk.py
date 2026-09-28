@@ -41,30 +41,22 @@ CRT_PATH = os.path.join(HERE, "primebit-debug.crt")
 # DEX patches: (file_offset, expected_bytes, new_bytes, description)
 # --------------------------------------------------------------------------
 P6A_NEW = bytes.fromhex(
-    "39021e00"          # 0x17: if-nez v2, :nonsu      (rooted? f==0 -> toast path)
-    "6e10110c0300"      # 0x19: invoke-virtual {v3}, MainActivity.h()Z
-    "0a00"              # 0x1c: move-result v0
-    "38002200"          # 0x1d: if-eqz v0, :end        (no overlay -> return)
-    "1c00bf02"          # 0x1f: const-class v0, FloatingService
-    "6e1010180000"      # 0x21: invoke-virtual {v0}, Class.getName()
-    "0c00"              # 0x24: move-result-object v0  (service class name)
-    "6e1059020300"      # 0x25: invoke-virtual {v3}, Context.getPackageName()
-    "0c01"              # 0x28: move-result-object v1  (package name)
-    "22027c00"          # 0x29: new-instance v2, Intent
-    "701065020200"      # 0x2b: invoke-direct {v2}, Intent.<init>()
-    "6e3070021200"      # 0x2e: invoke-virtual {v2,v1,v0}, Intent.setClassName()
-    "6e20d3012300"      # 0x31: invoke-virtual {v3,v2}, Activity.startForegroundService()
-    "280b"              # 0x34: goto :end
-    # :nonsu (0x35):
-    "1a00dd05"          # 0x35: const-string v0, "ERR: NO_SUPERUSER_ACCESS_DETECTED"
-    "1211"              # 0x37: const/4 v1, 1         (Toast.LENGTH_LONG)
-    "713067080301"      # 0x38: invoke-static {v3,v0,v1}, Toast.makeText()
-    "0c00"              # 0x3b: move-result-object v0
-    "6e1068080000"      # 0x3c: invoke-virtual {v0}, Toast.show()
-    # :end (0x3f):
-    "6200770f"          # 0x3f: sget-object v0, Unit.a
-    "1100"              # 0x41: return-object v0
-    "0000000000000000"  # 0x42-0x45: nops
+    "62008e01"          # 0x17: sget-object v0, Build$VERSION.SDK_INT
+    "13011a00"          # 0x19: const/16 v1, 26
+    "34101700"          # 0x1b: if-lt v0,v1, :end      (API<26 -> skip start, no crash)
+    "1c00bf02"          # 0x1d: const-class v0, FloatingService
+    "6e1010180000"      # 0x1f: invoke-virtual {v0}, Class.getName()
+    "0c00"              # 0x22: move-result-object v0  (service class name)
+    "6e1059020300"      # 0x23: invoke-virtual {v3}, Context.getPackageName()
+    "0c01"              # 0x26: move-result-object v1  (package name)
+    "22027c00"          # 0x27: new-instance v2, Intent
+    "701065020200"      # 0x29: invoke-direct {v2}, Intent.<init>()
+    "6e3070021200"      # 0x2c: invoke-virtual {v2,v1,v0}, Intent.setClassName()
+    "6e20d3012300"      # 0x2f: invoke-virtual {v3,v2}, Activity.startForegroundService()
+    # :end (0x32):
+    "6200770f"          # 0x32: sget-object v0, Unit.a
+    "1100"              # 0x34: return-object v0
+    "00000000000000000000000000000000000000000000000000000000000000000000"  # 0x35-0x45: nops x17
 )
 
 P6B_NEW = bytes.fromhex(
@@ -108,6 +100,14 @@ PATCHES = [
      bytes.fromhex("600039056e10110c04000a00380005006e10120c0400"),
      P6B_NEW,
      "P6b second button delegates to menu starter (mk case-5)"),
+    (0x10be5a,
+     bytes.fromhex("2204ff0b7030d83534006e2064044500"),
+     bytes.fromhex("00000000000000000000000000000000"),
+     "P7a silence crack-toast at service start (nop xy(1) post)"),
+    (0x1fa616,
+     bytes.fromhex("1a00d6067110da2500000c006e1003060f000c0f"),
+     bytes.fromhex("1a00000000000000000000006e1003060f000c0f"),
+     "P7f defuse CHECK-button socket crash (t4e3: empty status, show Cannot-connect)"),
 ]
 
 SKIP_PAID = {"P4a force paid-mode flag (intent path)",
@@ -293,7 +293,10 @@ def rebuild_apk(in_path: str, dex_patched: bytes, out_path: str):
             extra = b""
             if method == zipfile.ZIP_STORED:
                 pad = (-(offset + 30 + len(name_b))) % 4
-                extra = b"\x00" * pad
+                if pad:
+                    # Proper alignment extra block (id 0xd935) so strict
+                    # parsers (PackageManager, cloner apps) accept the entry.
+                    extra = struct.pack("<HH", 0xd935, pad) + b"\x00" * pad
             # Local header order is mod-TIME then mod-DATE; dt=(date,time).
             header = struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, 0x0800,
                                  method, dt[1], dt[0], crc,
