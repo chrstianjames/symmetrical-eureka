@@ -1,0 +1,53 @@
+name: Rebuild NoLogin APK
+
+# Rebuilds PRIMEBIT-NoLogin.apk from the committed original APK on every
+# push / pull request, then runs the full verification suite.
+# The patcher + throwaway debug key are committed, so CI is reproducible:
+# same input bytes + same key = byte-identical output (except the CMS
+# signingTime stamp inside CERT.RSA).
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install cryptography asn1crypto
+
+      - name: Rebuild patched APK
+        run: |
+          python tools/patch_apk.py 5_6181698127930598959.apk \
+            -o PRIMEBIT-NoLogin.apk
+
+      - name: Verify patched APK
+        run: |
+          python tools/patch_apk.py PRIMEBIT-NoLogin.apk --verify
+          test "$(sha256sum < PRIMEBIT-NoLogin.apk | cut -d' ' -f1)" != ""
+
+      - name: Verify v1 (JAR) signature with OpenSSL
+        run: |
+          rm -rf /tmp/sigcheck && mkdir -p /tmp/sigcheck && cd /tmp/sigcheck
+          unzip -o -q "$GITHUB_WORKSPACE/PRIMEBIT-NoLogin.apk" \
+            META-INF/CERT.SF META-INF/CERT.RSA
+          openssl smime -verify -inform DER -in META-INF/CERT.RSA \
+            -content META-INF/CERT.SF -noverify -out /dev/null
+
+      - name: Upload patched APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PRIMEBIT-NoLogin
+          path: PRIMEBIT-NoLogin.apk
+          if-no-files-found: error
