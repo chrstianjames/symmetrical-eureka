@@ -41,23 +41,31 @@ CRT_PATH = os.path.join(HERE, "primebit-debug.crt")
 # DEX patches: (file_offset, expected_bytes, new_bytes, description)
 # --------------------------------------------------------------------------
 P6A_NEW = bytes.fromhex(
-    "62008e01"          # 0x17: sget-object v0, Build$VERSION.SDK_INT
-    "13011a00"          # 0x19: const/16 v1, 26
-    "34101700"          # 0x1b: if-lt v0,v1, :end      (API<26 -> skip start, no crash)
-    "1c00bf02"          # 0x1d: const-class v0, FloatingService
-    "6e1010180000"      # 0x1f: invoke-virtual {v0}, Class.getName()
-    "0c00"              # 0x22: move-result-object v0  (service class name)
-    "6e1059020300"      # 0x23: invoke-virtual {v3}, Context.getPackageName()
-    "0c01"              # 0x26: move-result-object v1  (package name)
-    "22027c00"          # 0x27: new-instance v2, Intent
-    "701065020200"      # 0x29: invoke-direct {v2}, Intent.<init>()
-    "6e3070021200"      # 0x2c: invoke-virtual {v2,v1,v0}, Intent.setClassName()
-    "6e20d3012300"      # 0x2f: invoke-virtual {v3,v2}, Activity.startForegroundService()
-    # :end (0x32):
-    "6200770f"          # 0x32: sget-object v0, Unit.a
-    "1100"              # 0x34: return-object v0
-    "00000000000000000000000000000000000000000000000000000000000000000000"  # 0x35-0x45: nops x17
+    "1f03be02"          # 0x17: check-cast v3, MainActivity (nc.g is Object; restores
+                        #       the check-cast the original case-3 had. WITHOUT this the
+                        #       verifier rejects Lnc; -> startup auto-back.)
+    "71109e040300"      # 0x19: invoke-static {v3}, Settings.canDrawOverlays()
+    "0a00"              # 0x1c: move-result v0
+    "39001d00"          # 0x1d: if-nez v0, :end         (0x39=if-nez; overlay not granted -> skip
+                        #       start silently; user grants in Android Settings, taps again)
+    "62008e01"          # 0x1f: sget-object v0, Build$VERSION.SDK_INT
+    "13011a00"          # 0x21: const/16 v1, 26
+    "34101700"          # 0x23: if-lt v0,v1, :end       (0x23+0x17=0x3a; API<26 -> skip, no crash)
+    "1c00bf02"          # 0x25: const-class v0, FloatingService
+    "6e1010180000"      # 0x27: invoke-virtual {v0}, Class.getName()
+    "0c00"              # 0x2a: move-result-object v0  (service class name)
+    "6e1059020300"      # 0x2b: invoke-virtual {v3}, Context.getPackageName()
+    "0c01"              # 0x2e: move-result-object v1  (package name)
+    "22027c00"          # 0x2f: new-instance v2, Intent
+    "701065020200"      # 0x31: invoke-direct {v2}, Intent.<init>()
+    "6e3070021200"      # 0x34: invoke-virtual {v2,v1,v0}, Intent.setClassName()
+    "6e20d3012300"      # 0x37: invoke-virtual {v3,v2}, Activity.startForegroundService()
+    # :end (0x3a):
+    "6200770f"          # 0x3a: sget-object v0, Unit.a
+    "1100"              # 0x3c: return-object v0
+    "000000000000000000000000000000000000"  # 0x3d-0x45: nops x9
 )
+assert len(P6A_NEW) == 94, len(P6A_NEW)
 
 P6B_NEW = bytes.fromhex(
     "2200cc07"          # 0x1a: new-instance v0, Lnc;
@@ -95,7 +103,7 @@ PATCHES = [
          "6e20dc0130000c031a004f176e20da0103000c031a00c91912026e30db010302"
          "0c036e10dd010300280a6e10110c03000a00380005006e10120c03001101"),
      P6A_NEW,
-     "P6a reconstruct menu starter (nc case-3 inline service start)"),
+     "P6a-V3 menu starter (nc case-3: check-cast + overlay gate + API gate + inline start)"),
     (0x1a28c0,
      bytes.fromhex("600039056e10110c04000a00380005006e10120c0400"),
      P6B_NEW,
@@ -108,6 +116,26 @@ PATCHES = [
      bytes.fromhex("1a00d6067110da2500000c006e1003060f000c0f"),
      bytes.fromhex("1a00000000000000000000006e1003060f000c0f"),
      "P7f defuse CHECK-button socket crash (t4e3: empty status, show Cannot-connect)"),
+    (0x10a2d0,
+     bytes.fromhex("71103a0c0100"),
+     bytes.fromhex("000000000000"),
+     "P8 nop native invoke in FloatingService.c() (P2 already forces result=1; "
+     "kills NoSuchMethodError from encrypted-JNI GetMethodID on service start)"),
+    (0x109f8e,
+     bytes.fromhex("71103a0c0000"),
+     bytes.fromhex("000000000000"),
+     "P8b nop native invoke in FloatingService.b() (P3 already forces verify=0; "
+     "kills NoSuchMethodError on FORCE-INJECT tap)"),
+    (0x10c5a8,
+     bytes.fromhex("7140390c10320c00"),
+     bytes.fromhex("1a007c0300000000"),
+     "P9 nop native invoke in KeyLoginClient.c() (const-string FALLBACK "
+     "AUTH_TOKEN:INVALID... + nops; kills Error on auth worker thread)"),
+    (0x10898e,
+     bytes.fromhex("6e10120c0000"),
+     bytes.fromhex("000000000000"),
+     "P6c nop broken MainActivity.i() call in onActivityResult "
+     "(i()V is undefined -> NoSuchMethodError when returning from overlay settings)"),
 ]
 
 SKIP_PAID = {"P4a force paid-mode flag (intent path)",
