@@ -39,11 +39,30 @@ jobs:
 
       - name: Verify v1 (JAR) signature with OpenSSL
         run: |
-          rm -rf /tmp/sigcheck && mkdir -p /tmp/sigcheck && cd /tmp/sigcheck
-          unzip -o -q "$GITHUB_WORKSPACE/PRIMEBIT-NoLogin.apk" \
-            META-INF/CERT.SF META-INF/CERT.RSA
-          openssl smime -verify -inform DER -in META-INF/CERT.RSA \
-            -content META-INF/CERT.SF -noverify -out /dev/null
+          openssl version
+          python - <<'EOF'
+          import subprocess, zipfile, os, sys
+          os.makedirs("/tmp/sigcheck", exist_ok=True)
+          z = zipfile.ZipFile("PRIMEBIT-NoLogin.apk")
+          for n in ("META-INF/CERT.SF", "META-INF/CERT.RSA"):
+              blob = z.read(n)
+              print(f"extracted {n}: {len(blob)} bytes")
+              open("/tmp/sigcheck/" + n.rsplit("/", 1)[-1], "wb").write(blob)
+          for sub in ("cms", "smime"):
+              r = subprocess.run(
+                  ["openssl", sub, "-verify", "-inform", "DER",
+                   "-in", "/tmp/sigcheck/CERT.RSA",
+                   "-content", "/tmp/sigcheck/CERT.SF",
+                   "-noverify", "-out", "/tmp/sigcheck/out.bin"],
+                  capture_output=True, text=True)
+              print(f"--- openssl {sub}: exit={r.returncode}")
+              print((r.stdout + r.stderr)[-1500:])
+              if r.returncode == 0:
+                  print("CMS SIGNATURE OK")
+                  break
+          else:
+              sys.exit("CMS verification failed")
+          EOF
 
       - name: Upload patched APK
         uses: actions/upload-artifact@v4
